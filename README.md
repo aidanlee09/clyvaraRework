@@ -26,9 +26,8 @@ OPENAI_API_KEY="your_secret_key_here"
 DATABASE_URL="your_database_url_here"
 ```
 
-## 4. Configure frontend environment variables
-Create a `.env.local` file in `/frontend`:
-
+### 4. Configure frontend environment variables (Supabase)
+Create a `.env.local` file in /frontend and add your Supabase credentials:
 ```
 VITE_SUPABASE_URL="supabase_url_here"
 VITE_SUPABASE_ANON_KEY="your_secret_key_here"
@@ -164,4 +163,35 @@ FastAPI automatically generates interactive API documentation using OpenAPI and 
 
 - Make sure both backend and frontend servers are running for full functionality.
 - Commit changes only from feature branches and open a PR to merge into `main`.
+## 📦 AWS Services Setup
+
+### AWS RDS (PostgreSQL on PgAdmin4)
+1. Download [PgAdmin4](https://www.pgadmin.org/download/)
+2. Connect to RDS:
+   - Enter Hostname/Address, Port, Username from RDS (make sure to use `us-east-2` region)
+   - Ask Christian for password/credentials
+   - **Parameters**: 
+     - First: SSL Mode → value: `require`
+     - Second (Optional): Connection timeout
+3. **Database Schemas**: 
+   - In RDS, there are four schemas: `dashboard`, `main`, `public`, and `user_data`
+   - The most frequently used ones are `main` and `user_data`
+
+### AWS SageMaker
+1. **Access**: 
+   - Domain: `Clyvara_Health`
+   - Project name: `Clyvara_ML`
+2. **Authentication**: 
+   - Christian may need to give you authentications for S3, Manager, or may need to add you as a member
+3. **Datasets**: 
+   - Download ednet (kt-1 to kt-4) datasets via SageMaker
+4. **SAKT Model**: 
+   - Run SAKT model (initial experiments are done in `Dev.ipynb`)
+
+
+## 🧩 Notes
+- Make sure both backend and frontend servers are running for full functionality.  
+- Commit changes only from feature branches — open a PR to merge into `main`.  
 - Use the `.env.example` format (if present) for consistent environment setup.
+
+

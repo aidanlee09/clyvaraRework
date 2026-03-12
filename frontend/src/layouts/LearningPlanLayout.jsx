@@ -1,6 +1,8 @@
-import React, { useMemo, useState } from "react";
+//general layout page for all learning plans
+
+import React, { useMemo, useState, useCallback } from "react";
 import styled from "styled-components";
-import defaultQuizBank from "../utils/learningPlanQuizQuestions";
+import { supabase } from "../utils/supabaseClient";
 
 // ---------- Shared Layout ----------
 const PageWrapper = styled.div`
@@ -455,40 +457,46 @@ export function CaseStudySection({
 // Quiz Section
 export function QuizSection({
   sectionTitle = "Knowledge Check",
-  questions, // topic-specific questions
+  questions: initialQuestions, // topic-specific questions
+  topic = null, // e.g., "Opioids", "Inhaled Anesthetics"
+  learningPlanTitle = null, // e.g., "Opioids", "Inhaled Anesthetics"
+  caseStudy = "", // Optional case study text
+  videoUrl = null, // Optional video URL
+  enableDatabase = true, // Enable database integration
+  numQuestions = 3, // Number of questions to generate
+  enableGenerateQuestions = true, // Enable question generation button
 }) {
-  const quiz = useMemo(() => {
-    const source = questions ?? defaultQuizBank;
-
-    return source.map(q => {
-      const optionsWithIndex = q.options.map((opt, idx) => ({
-        label: opt,
-        originalIndex: idx,
-      }));
-
-      // shuffle options
-      for (let i = optionsWithIndex.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [optionsWithIndex[i], optionsWithIndex[j]] = [
-          optionsWithIndex[j],
-          optionsWithIndex[i],
-        ];
-      }
-
-      const newCorrectIndex = optionsWithIndex.findIndex(
-        opt => opt.originalIndex === q.correctIndex
-      );
-
-      return {
-        ...q,
-        options: optionsWithIndex.map(o => o.label),
-        correctIndex: newCorrectIndex,
-      };
-    });
-  }, [questions]);
-
+  // Start with null questions - only show quiz after generation
+  const [questions, setQuestions] = useState(null);
   const [answers, setAnswers] = useState({});
   const [submitted, setSubmitted] = useState(false);
+  const [learningPlanId, setLearningPlanId] = useState(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [quizMapping, setQuizMapping] = useState({});
+  const [isLoadingQuestions, setIsLoadingQuestions] = useState(false);
+  const [questionsError, setQuestionsError] = useState(null);
+
+  // Don't use initialQuestions - we want to start blank
+
+  const quiz = useMemo(() => {
+    // Only use questions if they exist (after generation)
+    if (!questions || questions.length === 0) {
+      return [];
+    }
+
+    // No shuffling - keep options in original order
+    // This ensures the index the user clicks matches what gets stored in the database
+    const quizQuestions = questions.map(q => ({
+      ...q,
+      options: q.options, // Keep original order
+      correctIndex: q.correctIndex, // Keep original correct index
+    }));
+
+    // No mapping needed since we're not shuffling
+    setQuizMapping({});
+
+    return quizQuestions;
+  }, [questions]);
 
   const score = useMemo(() => {
     if (!submitted) return null;
@@ -501,14 +509,195 @@ export function QuizSection({
 
   const handleSelect = (qid, idx) => {
     if (submitted) return;
-    setAnswers(prev => ({ ...prev, [qid]: idx }));
+    setAnswers(prev => {
+      const newAnswers = { ...prev, [qid]: idx };
+      console.log(`Selected answer for ${qid}: index ${idx}`, {
+        question: quiz.find(q => q.id === qid),
+        newAnswers
+      });
+      return newAnswers;
+    });
   };
 
-  const handleSubmit = () => setSubmitted(true);
+  const createOrGetLearningPlan = useCallback(async (quizQuestions) => {
+    if (!enableDatabase) return null;
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        return null;
+      }
+
+      const learningPlanData = {
+        title: learningPlanTitle || topic || "Learning Plan",
+        description: `Learning plan for ${topic || learningPlanTitle || "case study"}`,
+        video_url: videoUrl || null,
+        video_title: videoUrl ? "Lesson Video" : null,
+        case_study: caseStudy || "",
+        case_study_editable: false,
+        quiz_questions: quizQuestions,
+        topic: topic || null,
+      };
+
+      const response = await fetch("/api/learning-plans", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${session.access_token}`
+        },
+        body: JSON.stringify(learningPlanData)
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        if (data.success && data.learning_plan_id) {
+          setLearningPlanId(data.learning_plan_id);
+          return data.learning_plan_id;
+        }
+      }
+    } catch (error) {
+      console.error("Error creating learning plan:", error);
+    }
+    return null;
+  }, [enableDatabase, learningPlanTitle, topic, caseStudy, videoUrl]);
+
+  const handleSubmit = async () => {
+    if (submitted) return;
+    
+    setSubmitted(true);
+    
+    if (!enableDatabase) {
+      // Just show results without saving
+      return;
+    }
+
+    setIsSaving(true);
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        console.warn("No active session, quiz results not saved");
+        setIsSaving(false);
+        return;
+      }
+
+      // If we don't have a learning plan ID yet, create one first
+      let planId = learningPlanId;
+      if (!planId && questions) {
+        planId = await createOrGetLearningPlan(questions);
+      }
+
+      if (planId) {
+        // No mapping needed - answers are already in the correct format
+        // The index the user clicks directly corresponds to the original index
+        const originalAnswers = { ...answers };
+        
+        // Debug log to verify answers
+        console.log('Quiz submission:', {
+          userSelectedAnswers: answers,
+          submittedAnswers: originalAnswers,
+        });
+        
+        // Submit quiz results
+        const submitData = {
+          learning_plan_id: planId,
+          quiz_answers: originalAnswers,
+          video_watched: false,
+          case_study_read: false,
+        };
+
+        const submitResponse = await fetch("/api/learning-plans/submit-quiz", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${session.access_token}`
+          },
+          body: JSON.stringify(submitData)
+        });
+
+        if (submitResponse.ok) {
+          const submitResult = await submitResponse.json();
+          console.log("Quiz submitted successfully:", submitResult);
+        } else {
+          console.error("Failed to submit quiz");
+        }
+      } else {
+        console.warn("No learning plan ID, quiz results not saved");
+      }
+    } catch (error) {
+      console.error("Error submitting quiz:", error);
+    } finally {
+      setIsSaving(false);
+    }
+  };
 
   const handleReset = () => {
     setAnswers({});
     setSubmitted(false);
+  };
+
+  const handleGenerateQuestions = async () => {
+    if (!enableGenerateQuestions || !topic) {
+      return;
+    }
+
+    setIsLoadingQuestions(true);
+    setQuestionsError(null);
+    // Reset answers immediately when generating new questions
+    setAnswers({});
+    setSubmitted(false);
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        console.warn("No active session, cannot generate questions");
+        setQuestionsError("Please log in to generate questions");
+        setIsLoadingQuestions(false);
+        return;
+      }
+
+      const requestBody = {
+        num_questions: numQuestions,
+        topic: topic, // Use the topic prop (e.g., "Opioids" or "Inhaled Anesthetics")
+      };
+
+      const response = await fetch("/api/learning-plan/generate-questions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${session.access_token}`
+        },
+        body: JSON.stringify(requestBody)
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        if (data.success && data.questions && data.questions.length > 0) {
+          setQuestions(data.questions);
+          // Ensure answers are reset
+          setAnswers({});
+          setSubmitted(false);
+
+          // Persist this new question set in the learning plan table
+          if (enableDatabase) {
+            const planId = await createOrGetLearningPlan(data.questions);
+            if (planId) {
+              setLearningPlanId(planId);
+            }
+          }
+        } else {
+          throw new Error("No questions generated");
+        }
+      } else {
+        const errorData = await response.json().catch(() => ({ detail: "Unknown error" }));
+        throw new Error(errorData.detail || "Failed to generate questions");
+      }
+    } catch (error) {
+      console.error("Error generating questions:", error);
+      setQuestionsError(error.message);
+    } finally {
+      setIsLoadingQuestions(false);
+    }
   };
 
   return (
@@ -516,61 +705,95 @@ export function QuizSection({
       <SectionHeader>
         <SectionTitleRow>
           <SectionTitle>{sectionTitle}</SectionTitle>
+          {enableGenerateQuestions && topic && (
+            <ActionButton
+              onClick={handleGenerateQuestions}
+              disabled={isLoadingQuestions}
+              style={{ marginLeft: 'auto', fontSize: '12px', padding: '6px 12px' }}
+            >
+              {isLoadingQuestions ? 'Generating...' : '🔄 Generate Questions'}
+            </ActionButton>
+          )}
         </SectionTitleRow>
       </SectionHeader>
 
       <Divider />
-      <QuizList>
-        {quiz.map((q, qi) => (
-          <QuestionCard key={q.id}>
-            <QuestionText>
-              {qi + 1}. {q.text}
-            </QuestionText>
+      {isLoadingQuestions && (
+        <div style={{ textAlign: 'center', padding: '20px', color: '#64748b' }}>
+          <p>Generating questions based on {topic} materials...</p>
+        </div>
+      )}
+      {questionsError && (
+        <div style={{ padding: '12px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '6px', marginBottom: '16px', color: '#991b1b' }}>
+          <p style={{ margin: 0, fontSize: '14px' }}>
+            ⚠️ Could not generate questions: {questionsError}
+          </p>
+        </div>
+      )}
+      {!questions || questions.length === 0 ? (
+        <div style={{ textAlign: 'center', padding: '40px 20px', color: '#64748b' }}>
+          <p style={{ fontSize: '16px', marginBottom: '12px' }}>
+            No questions available yet.
+          </p>
+          <p style={{ fontSize: '14px', color: '#94a3b8' }}>
+            Click "Generate Questions" above to create topic-specific questions based on your materials.
+          </p>
+        </div>
+      ) : (
+        <>
+          <QuizList>
+            {quiz.map((q, qi) => (
+              <QuestionCard key={q.id}>
+                <QuestionText>
+                  {qi + 1}. {q.text}
+                </QuestionText>
 
-            {q.options.map((opt, idx) => (
-              <OptionRow key={idx} htmlFor={`${q.id}-${idx}`}>
-                <HiddenRadio
-                  id={`${q.id}-${idx}`}
-                  name={q.id}
-                  checked={answers[q.id] === idx}
-                  onChange={() => handleSelect(q.id, idx)}
-                />
-                <Bubble>
-                  <BubbleDot />
-                </Bubble>
-                <span>{opt}</span>
-              </OptionRow>
+                {q.options.map((opt, idx) => (
+                  <OptionRow key={idx} htmlFor={`${q.id}-${idx}`}>
+                    <HiddenRadio
+                      id={`${q.id}-${idx}`}
+                      name={q.id}
+                      checked={answers[q.id] === idx}
+                      onChange={() => handleSelect(q.id, idx)}
+                    />
+                    <Bubble>
+                      <BubbleDot />
+                    </Bubble>
+                    <span>{opt}</span>
+                  </OptionRow>
+                ))}
+
+                {submitted && (
+                  <Feedback $correct={answers[q.id] === q.correctIndex}>
+                    {answers[q.id] === q.correctIndex
+                      ? "✅ Correct."
+                      : "❌ Not quite."}{" "}
+                    {q.explanation}
+                  </Feedback>
+                )}
+              </QuestionCard>
             ))}
+          </QuizList>
 
-            {submitted && (
-              <Feedback $correct={answers[q.id] === q.correctIndex}>
-                {answers[q.id] === q.correctIndex
-                  ? "✅ Correct."
-                  : "❌ Not quite."}{" "}
-                {q.explanation}
-              </Feedback>
+          <Divider />
+          <ActionsRow>
+            <ActionButton
+              $variant="primary"
+              onClick={handleSubmit}
+              disabled={submitted || isSaving}
+            >
+              {isSaving ? "Saving..." : submitted ? "Submitted" : "Submit Quiz"}
+            </ActionButton>
+            <ActionButton onClick={handleReset}>Reset Answers</ActionButton>
+            {submitted && score && (
+              <span style={{ color: "#0f172a", fontWeight: 600 }}>
+                Score: {score.correct} / {score.total} (
+                {Math.round((score.correct / score.total) * 100)}%)
+              </span>
             )}
-          </QuestionCard>
-        ))}
-      </QuizList>
-
-      <Divider />
-      <ActionsRow>
-        <ActionButton
-          $variant="primary"
-          onClick={handleSubmit}
-          disabled={submitted}
-        >
-          Submit Quiz
-        </ActionButton>
-        <ActionButton onClick={handleReset}>Reset Answers</ActionButton>
-        {submitted && score && (
-          <span style={{ color: "#0f172a", fontWeight: 600 }}>
-            Score: {score.correct} / {score.total} (
-            {Math.round((score.correct / score.total) * 100)}%)
-          </span>
-        )}
-      </ActionsRow>
+          </ActionsRow>
+        </>
+      )}
     </SectionCard>
   );
 }

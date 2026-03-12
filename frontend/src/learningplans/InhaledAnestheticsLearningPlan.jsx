@@ -5,7 +5,6 @@ import {
   CaseStudySection,
   QuizSection,
 } from "../layouts/LearningPlanLayout";
-import learningPlanQuestions from "../utils/learningPlanQuizQuestions";
 
 import Video1 from "../assets/videos/InhaledAnesthetics1.mp4";
 
@@ -38,7 +37,14 @@ export default function InhaledAnestheticsLearningPlan() {
         ]}
       />
 
-      <QuizSection questions={learningPlanQuestions} />
+      <QuizSection 
+        topic="Inhaled Anesthetics"
+        learningPlanTitle="Inhaled Anesthetics"
+        caseStudy=""
+        videoUrl={Video1}
+        enableDatabase={true}
+        enableGenerateQuestions={true}
+      />
     </LearningPlanLayout>
   );
 }
